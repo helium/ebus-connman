@@ -27,7 +27,8 @@ init([Proxy, AgentName, InputModule, InputState]) ->
                 input_module=InputModule, input_state=InputState}}.
 
 
-handle_message("RequestInput", Msg, State=#state{input_module=InputModule, input_state=InputState}) ->
+handle_message("RequestInput", Msg, State=#state{input_module=InputModule,
+                                                 input_state=InputState}) ->
     case ebus_message:args(Msg) of
         {ok, [ServicePath, Specs]} ->
             case InputModule:handle_input_request(InputState, ServicePath, Specs) of
@@ -44,6 +45,13 @@ handle_message("RequestInput", Msg, State=#state{input_module=InputModule, input
             lager:warning("Error in input request: ~p", [Error]),
             {noreply, State}
     end;
+handle_message("RequestBrowser", Msg, State=#state{}) ->
+    {ok, [ServicePath, URL]} = ebus_message:args(Msg),
+    lager:debug("Browser request for path ~p", [ServicePath]),
+    {reply_error,
+     "net.connman.Agent.Error.Browser", URL, State};
+
+
 handle_message(Member, _Msg, State=#state{}) ->
     lager:warning("Unhandled message ~p", [Member]),
     {noreply, State}.

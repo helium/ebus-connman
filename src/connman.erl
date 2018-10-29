@@ -7,7 +7,8 @@
 -export([connman/0]).
 %% API
 -export([state/1, register_state_notify/2, unregister_state_notify/2,
-         enable/3, scan/2, technologies/1, services/1,
+         enable/3, scan/2, technologies/1,
+         services/1, service_names/1,
          connect/4]).
 %% connman_agent
 -export([handle_input_request/3]).
@@ -77,7 +78,20 @@ technologies(Pid) ->
     gen_server:call(Pid, technologies).
 
 services(Pid) ->
-    gen_server:call(Pid, services).
+    gen_server:call(Pid, services, infinity).
+
+service_names(Pid) ->
+    case services(Pid) of
+        {ok, Services} ->
+            lists:foldl(fun({_, M}, Acc) ->
+                                case maps:get("Name", M, false) of
+                                    false -> Acc;
+                                    Name -> [Name | Acc]
+                                end
+                        end, [], Services);
+        {error, Error}->
+            {error, Error}
+    end.
 
 connect(Pid, Tech, ServiceName, ServicePass) ->
     gen_server:call(Pid, {connect, Tech, ServiceName, ServicePass}, infinity).

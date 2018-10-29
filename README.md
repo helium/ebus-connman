@@ -7,7 +7,7 @@
 # ebus-connman
 
 
-The `connman` applicaiton provides an Erlang binding for the [connman]
+The `connman` application provides an Erlang binding for the [connman]
 connection manager.
 
 

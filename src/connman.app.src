@@ -1,0 +1,17 @@
+{application, connman,
+ [{description, "An Erlang client for connman"},
+  {vsn, "git"},
+  {registered, []},
+  {applications,
+   [kernel,
+    stdlib,
+    lager,
+    ebus
+   ]},
+  {env,[]},
+  {mod, {connman_app, []}},
+
+  {licenses, ["Apache 2.0"]},
+  {maintainers, ["Helium"]},
+  {links, [{"Github", "https://github.com/helium/ebus-connman"}]}
+ ]}.

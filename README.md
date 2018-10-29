@@ -116,6 +116,21 @@ names: `offline`, `idle`, `ready`, `online`. Refer to the connman
 documentation for the latestdocumentation on the meaning of the state
 names.
 
+### Connect to an SSID
+
+As an extension of normal connman behavior the API allows connecting
+to an SSID by name and given a password will block until the
+connection is established or fails. `connman` will try to find the
+given SSID and will attempt to connect to it.
+
+``` erlang
+Eshell V10.1  (abort with ^G)E
+1> {ok, C} = connman:connman().
+{ok,<0.257.0>}
+2> connman:connect(C, wifi, "My Access Point", "My AP Password").
+ok
+```
+
 
 ## Building
 

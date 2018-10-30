@@ -1,6 +1,6 @@
 [![Travis][travis badge]][travis]
 [![Hex.pm Version][hex version badge]][hex]
-[![Hex.pm License][hex license badge]][hex]
+[![Hex.pm License][license badge]][license]
 [![Erlang Versions][erlang version badge]][erlang]
 [![Build Tool][build tool]][rebar]
 
@@ -138,11 +138,12 @@ Fork the repo and simply use `make` to build the library.
 
 
 <!-- Badges -->
-[travis]: https://travis-ci.org/helium/ebus-connman
-[travis badge]: https://img.shields.io/travis/helium/ebus-connman/master.svg?style=flat-square
+[travis]: https://travis-ci.com/helium/ebus-connman
+[travis badge]: https://img.shields.io/travis/com/helium/ebus-connman/master.svg?style=flat-square
 [hex]: https://hex.pm/packages/connman
 [hex version badge]: https://img.shields.io/hexpm/v/connman.svg?style=flat-square
-[hex license badge]: https://img.shields.io/hexpm/l/connman.svg?style=flat-square
+[license]: https://github.com/helium/ebus-connman/blob/master/LICENSE
+[license badge]: https://img.shields.io/github/license/helium/ebus-connman.svg
 [erlang version badge]: https://img.shields.io/badge/erlang-21.1-blue.svg?style=flat-square
 [build tool]: https://img.shields.io/badge/build%20tool-rebar3-orange.svg?style=flat-square
 

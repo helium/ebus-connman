@@ -1,7 +1,7 @@
 {"1.1.0",
 [{<<"ebus">>,
   {git,"https://github.com/helium/ebus",
-       {ref,"c30628d0dbd43b23e74cf5ff670b4128ad803ad4"}},
+       {ref,"016be945878bc25b9e4b1bf2c07727685612e85d"}},
   0},
  {<<"goldrush">>,{pkg,<<"goldrush">>,<<"0.1.9">>},1},
  {<<"lager">>,{pkg,<<"lager">>,<<"3.6.5">>},0}]}.

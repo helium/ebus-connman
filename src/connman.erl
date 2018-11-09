@@ -6,7 +6,8 @@
 %% Getting the instance
 -export([connman/0]).
 %% API
--export([state/1, register_state_notify/2, unregister_state_notify/2,
+-export([state/1, state/2,
+         register_state_notify/2, unregister_state_notify/2,
          enable/3, scan/2, technologies/1,
          services/1, service_names/1,
          connect/4]).
@@ -22,8 +23,10 @@
 %% gen_server
 -export([start/0, start_link/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+-type technology() :: wifi | ethernet | bluetooth.
+-type state() :: idle | ready | online | disabled.
 -type service() :: {ebus:object_path(), map()}.
--export_type([service/0]).
+-export_type([service/0, technology/0, state/0]).
 
 -define(CONNMAN_SERVICE, "net.connman").
 -define(CONNMAN_PATH_TECH, "/net/connman/technology").
@@ -57,8 +60,15 @@ get_services(Proxy) ->
         {error, Error} -> {error, Error}
     end.
 
+-spec state(pid()) -> state().
 state(Pid) ->
-    gen_server:call(Pid, state).
+    state(Pid, global).
+
+%% @doc Gets the current state of a given `{tech, Technology}'
+%% technology or the "global" state.
+-spec state(pid(), global | {tech, technology()})-> state().
+state(Pid, Type) ->
+    gen_server:call(Pid, {state, Type}).
 
 -spec register_state_notify(pid(), Handler::pid()) -> ok.
 register_state_notify(Pid, Handler) ->
@@ -68,12 +78,21 @@ register_state_notify(Pid, Handler) ->
 unregister_state_notify(Pid, Handler) ->
     gen_server:cast(Pid, {unregister_state_notify, Handler}).
 
+%% @doc Enable or disable the given `Tech'.
+-spec enable(pid(), technology(), boolean()) -> ok | {error, term()}.
 enable(Pid, Tech, Enable) ->
     gen_server:call(Pid, {enable, Tech, Enable}).
 
+%% @doc Requests a scan to be started for the given `Tech'. The
+%% primary (and currently only) technology that supports scanning is
+%% `wifi'.
+-spec scan(pid(), technology()) -> ok | {error, term()}.
 scan(Pid, Tech) ->
     gen_server:call(Pid, {scan, Tech}).
 
+
+%% doc Returns the types of currently supported technologies.
+-spec technologies(pid()) -> [technology()].
 technologies(Pid) ->
     gen_server:call(Pid, technologies).
 
@@ -131,9 +150,24 @@ handle_call({enable, Tech, Enable}, _From, State=#state{}) ->
                                     [string, variant], ["Powered", Enable]),
             {reply, Reply, State}
     end;
-handle_call(state, _From, State=#state{}) ->
-    Reply = case ebus_proxy:call(State#state.proxy, "net.connman.Manager.GetProperties") of
+handle_call({state, global}, _From, State=#state{}) ->
+    Reply = case ebus_proxy:call(State#state.proxy,
+                                 "net.connman.Manager.GetProperties") of
                 {ok, [Map]} -> {ok, list_to_atom(maps:get("State", Map))};
+                {error, Error} -> {error, Error}
+            end,
+    {reply, Reply, State};
+handle_call({state, {tech, Tech}}, _From, State=#state{}) ->
+    Reply = case ebus_proxy:call(State#state.proxy, tech_path(Tech),
+                                 "net.connman.Technology.GetProperties") of
+                {ok, [Map]} ->
+                    case maps:get("Connected", Map) of
+                        true -> online;
+                        false -> case maps:get("Powered", Map) of
+                                     true -> idle;
+                                     false -> disabled
+                                 end
+                    end;
                 {error, Error} -> {error, Error}
             end,
     {reply, Reply, State};

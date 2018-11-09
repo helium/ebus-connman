@@ -27,7 +27,8 @@ init([Proxy, AgentName, InputModule, InputState]) ->
                 input_module=InputModule, input_state=InputState}}.
 
 
-handle_message("RequestInput", Msg, State=#state{input_module=InputModule, input_state=InputState}) ->
+handle_message("net.connman.Agent.RequestInput", Msg,
+               State=#state{input_module=InputModule, input_state=InputState}) ->
     case ebus_message:args(Msg) of
         {ok, [ServicePath, Specs]} ->
             case InputModule:handle_input_request(InputState, ServicePath, Specs) of

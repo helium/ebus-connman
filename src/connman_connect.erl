@@ -17,6 +17,7 @@
 
 -define(SEARCH_TIMEOUT, 5000).
 -define(CONNECT_RESULT(R), {connect_result, self(), R}).
+-define(SERVICES_SIGNAL_INFO, connman_connect).
 
 callback_mode() -> state_functions.
 
@@ -25,7 +26,8 @@ start_link(Proxy, Tech, ServiceName, Handler) ->
 
 init([Proxy, Tech, ServiceName, Handler]) ->
     {ok, ServicesSignal} =
-        ebus_proxy:add_signal_handler(Proxy, "/", "net.connman.Manager.ServicesChanged", self()),
+        ebus_proxy:add_signal_handler(Proxy, "/", "net.connman.Manager.ServicesChanged",
+                                      self(), ?SERVICES_SIGNAL_INFO),
     %% Kick of a scan to speed up service discovery
     scan(Tech, Proxy),
     self() ! find_service,
@@ -34,11 +36,19 @@ init([Proxy, Tech, ServiceName, Handler]) ->
            service_name=ServiceName, services_signal_id=ServicesSignal},
      {next_event, info, find_service}}.
 
-searching(info, find_service, Data=#data{}) ->
-    {ok, Services} = connman:get_services(Data#data.proxy),
-    erlang:send_after(?SEARCH_TIMEOUT, self(), timeout_find_service),
-    {keep_state, Data, {next_event, info, {find_service, Services}}};
-searching(info, {filter_match, SignalID, Msg}, Data=#data{services_signal_id=SignalID}) ->
+searching(info, find_service, Data=#data{handler=Handler}) ->
+    case connman:get_services(Data#data.proxy) of
+        {ok, Services} ->
+            erlang:send_after(?SEARCH_TIMEOUT, self(), timeout_find_service),
+            {keep_state, Data, {next_event, info, {find_service, Services}}};
+        {error, timeout} ->
+            erlang:send_after(1000, self(), find_service);
+        {error, Error} ->
+            Handler ! ?CONNECT_RESULT({error, Error}),
+            {stop, normal, Data}
+
+    end;
+searching(info, {ebus_signal, _, SignalID, Msg}, Data=#data{services_signal_id=SignalID}) ->
     %% If the service wasn't found before using get_services it may
     %% appear in the changed list as a new service.
     case ebus_message:args(Msg) of
@@ -85,7 +95,10 @@ connecting(Type, Msg, Data=#data{}) ->
     handle_event(Type, Msg, Data).
 
 terminate(_, Data=#data{}) ->
-    ebus_proxy:remove_signal_handler(Data#data.proxy, Data#data.services_signal_id).
+    ebus_proxy:remove_signal_handler(Data#data.proxy,
+                                     Data#data.services_signal_id,
+                                     self(),
+                                     ?SERVICES_SIGNAL_INFO).
 
 
 %%
@@ -96,7 +109,7 @@ terminate(_, Data=#data{}) ->
 handle_event(info, {find_service, _}, #data{}) ->
     %% handled only by searching
     keep_state_and_data;
-handle_event(info, {filter_match, _, _}, #data{}) ->
+handle_event(info, {ebus_signal, _, _, _}, #data{}) ->
     %% handled only by searching
     keep_state_and_data;
 handle_event(info, timeout_find_service, #data{}) ->

@@ -6,7 +6,9 @@
 %% Getting the instance
 -export([connman/0]).
 %% API
--export([state/1, register_state_notify/2, unregister_state_notify/2,
+-export([state/1, state/2,
+         register_state_notify/3, register_state_notify/4,
+         unregister_state_notify/4,
          enable/3, scan/2, technologies/1,
          services/1, service_names/1,
          connect/4]).
@@ -20,13 +22,17 @@
 -export_type([service_descriptor/0]).
 
 %% gen_server
--export([start/0, start_link/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
+-export([start/0, start_link/0, init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
+-type technology() :: wifi | ethernet | bluetooth.
+-type state() :: idle | ready | online | disabled.
+-type state_type() :: global | {tech, technology()}.
 -type service() :: {ebus:object_path(), map()}.
--export_type([service/0]).
+-export_type([service/0, technology/0, state_type/0, state/0]).
 
 -define(CONNMAN_SERVICE, "net.connman").
 -define(CONNMAN_PATH_TECH, "/net/connman/technology").
+-define(CONNMAN_PATH_TECH(T), "/net/connman/technology" ++ "/" ++ atom_to_list(T)).
 
 -record(connect, {
                   from :: term(),
@@ -39,8 +45,7 @@
                 proxy :: ebus:proxy(),
                 agent :: pid(),
                 connects=#{} :: #{pid() => #connect{}},
-                state_notify_group :: reference(),
-                state_signal_id :: ebus:filter_id()
+                signal_handlers=#{} ::  #{{ebus:object_path(), string()} => {ebus:signal_id(), [pid()]}}
                }).
 
 %%
@@ -57,23 +62,45 @@ get_services(Proxy) ->
         {error, Error} -> {error, Error}
     end.
 
+-spec state(pid()) -> state().
 state(Pid) ->
-    gen_server:call(Pid, state).
+    state(Pid, global).
 
--spec register_state_notify(pid(), Handler::pid()) -> ok.
-register_state_notify(Pid, Handler) ->
-    gen_server:cast(Pid, {register_state_notify, Handler}).
+%% @doc Gets the current state of a given `{tech, Technology}'
+%% technology or the "global" state.
+-spec state(pid(), state_type())-> state().
+state(Pid, Type) ->
+    gen_server:call(Pid, {state, Type}).
 
--spec unregister_state_notify(pid(), Handler::pid()) -> ok.
-unregister_state_notify(Pid, Handler) ->
-    gen_server:cast(Pid, {unregister_state_notify, Handler}).
+-spec register_state_notify(pid(), Handler::pid(), Info::any())
+                           -> {ok, SignalID::ebus:filter_id()} | {error, term()}.
+register_state_notify(Pid, Handler, Info) ->
+    register_state_notify(Pid, global, Handler, Info).
 
+-spec register_state_notify(pid(), state_type(), Handler::pid(), Info::any())
+                           -> {ok, SignalID::ebus:filter_id()} | {error, term()}.
+register_state_notify(Pid, Type, Handler, Info) ->
+    gen_server:call(Pid, {register_state_notify, Type, Handler, Info}).
+
+-spec unregister_state_notify(pid(), SignalID::ebus:filter_id(), Handler::pid(), Info::any()) -> ok.
+unregister_state_notify(Pid, SignalID, Handler, Info) ->
+    gen_server:call(Pid, {unregister_state_notify, SignalID, Handler, Info}).
+
+%% @doc Enable or disable the given `Tech'.
+-spec enable(pid(), technology(), boolean()) -> ok | {error, term()}.
 enable(Pid, Tech, Enable) ->
     gen_server:call(Pid, {enable, Tech, Enable}).
 
+%% @doc Requests a scan to be started for the given `Tech'. The
+%% primary (and currently only) technology that supports scanning is
+%% `wifi'.
+-spec scan(pid(), technology()) -> ok | {error, term()}.
 scan(Pid, Tech) ->
     gen_server:call(Pid, {scan, Tech}).
 
+
+%% doc Returns the types of currently supported technologies.
+-spec technologies(pid()) -> [technology()].
 technologies(Pid) ->
     gen_server:call(Pid, technologies).
 
@@ -89,7 +116,7 @@ service_names(Pid) ->
                                     Name -> [Name | Acc]
                                 end
                         end, [], Services);
-        {error, Error}->
+        {error, Error} ->
             {error, Error}
     end.
 
@@ -114,31 +141,41 @@ start_link() ->
 init([Bus]) ->
     {ok, Proxy} = ebus_proxy:start_link(Bus, ?CONNMAN_SERVICE, []),
     {ok, AgentPid} = connman_agent:start_link(Proxy, ?MODULE, self()),
-    {ok, StateSignal} =
-        ebus_proxy:add_signal_handler(Proxy, "/", "net.connman.Manager.PropertyChanged", self()),
-    GroupID = make_ref(),
-    ok = pg2:create(GroupID),
-    {ok, #state{bus=Bus, proxy=Proxy, agent=AgentPid,
-                state_notify_group=GroupID, state_signal_id=StateSignal}}.
+    {ok, #state{bus=Bus, proxy=Proxy, agent=AgentPid}}.
 
 
 handle_call({enable, Tech, Enable}, _From, State=#state{}) ->
     case tech_is_enabled(Tech, Enable, State)of
         {ok, true} -> {reply, ok, State};
         _ ->
-            Reply = ebus_proxy:send(State#state.proxy, tech_path(Tech),
+            Reply = ebus_proxy:send(State#state.proxy, ?CONNMAN_PATH_TECH(Tech),
                                     "net.connman.Technology.SetProperty",
                                     [string, variant], ["Powered", Enable]),
             {reply, Reply, State}
     end;
-handle_call(state, _From, State=#state{}) ->
-    Reply = case ebus_proxy:call(State#state.proxy, "net.connman.Manager.GetProperties") of
+handle_call({state, global}, _From, State=#state{}) ->
+    Reply = case ebus_proxy:call(State#state.proxy,
+                                 "net.connman.Manager.GetProperties") of
                 {ok, [Map]} -> {ok, list_to_atom(maps:get("State", Map))};
                 {error, Error} -> {error, Error}
             end,
     {reply, Reply, State};
+handle_call({state, {tech, Tech}}, _From, State=#state{}) ->
+    Reply = case ebus_proxy:call(State#state.proxy, ?CONNMAN_PATH_TECH(Tech),
+                                 "net.connman.Technology.GetProperties") of
+                {ok, [Map]} ->
+                    case maps:get("Connected", Map) of
+                        true -> online;
+                        false -> case maps:get("Powered", Map) of
+                                     true -> idle;
+                                     false -> disabled
+                                 end
+                    end;
+                {error, Error} -> {error, Error}
+            end,
+    {reply, Reply, State};
 handle_call({scan, Tech}, _From, State=#state{}) ->
-    Reply = ebus_proxy:send(State#state.proxy, ?CONNMAN_PATH_TECH ++ "/" ++ atom_to_list(Tech),
+    Reply = ebus_proxy:send(State#state.proxy, ?CONNMAN_PATH_TECH(Tech),
                             "net.connman.Technology.Scan"),
     {reply, Reply, State};
 handle_call(technologies, _From, State=#state{}) ->
@@ -158,8 +195,41 @@ handle_call({connect, Tech, ServiceName, ServicePass}, From, State=#state{}) ->
                         #connect{service_pass=ServicePass, from=From},
                         State#state.connects),
     {noreply, State#state{connects=Connects}};
+
+%%
+%% register_state_notify
+%%
+
+handle_call({register_state_notify, global, Handler, Info}, _From, State=#state{}) ->
+    {reply, ebus_proxy:add_signal_handler(State#state.proxy,
+                                          "/",
+                                          "net.connman.Manager.PropertyChanged",
+                                          Handler, Info),
+    State};
+handle_call({register_state_notify, {tech, Tech}, Handler, Info}, _From, State=#state{}) ->
+    {reply, ebus_proxy:add_signal_handler(State#state.proxy,
+                                          ?CONNMAN_PATH_TECH(Tech),
+                                          "net.connman.Technology.PropertyChanged",
+                                          Handler, Info),
+     State};
+handle_call({register_state_notify, Other, _Handler, _Info}, _From, State=#state{}) ->
+    lager:error("Unhandled state notify register: ~p", [Other]),
+    {reply, {error, {invalid_state, Other}},
+     State};
+
+%%
+%% unregister_state_notify
+
+handle_call({unregister_state_notify, SignalID, Handler, Info}, _From, State=#state{}) ->
+    {reply, ebus_proxy:remove_signal_handler(State#state.proxy, SignalID, Handler, Info),
+    State};
+
+%%
+%% input_request
+%%
+
 handle_call({input_request, ServicePath, Specs}, _From, State=#state{connects=Connects}) ->
-    lager:info("Looking up ~p in ~p", [ServicePath, Connects]),
+    lager:debug("Looking up input resopnse for ~p", [ServicePath]),
     case lists:keyfind(ServicePath, #connect.service_path, maps:values(Connects)) of
         false ->
             {reply, false, State};
@@ -171,28 +241,10 @@ handle_call(Msg, _From, State=#state{}) ->
     lager:warning("Unhandled call ~p", [Msg]),
     {reply, ok, State}.
 
-handle_cast({register_state_notify, Handler}, State=#state{state_notify_group=Group}) ->
-    pg2:join(Group, Handler),
-    {noreply, State};
-handle_cast({unregister_state_notify, Handler}, State=#state{state_notify_group=Group}) ->
-    ebus_proxy:remove_signal_handler(State#state.proxy, State#state.state_signal_id),
-    pg2:leave(Group, Handler),
-    {noreply, State};
-
 handle_cast(Msg, State=#state{}) ->
     lager:warning("Unhandled cast ~p", [Msg]),
     {noreply, State}.
 
-
-handle_info({filter_match, SignalID, Msg}, State=#state{state_signal_id=SignalID}) ->
-    case ebus_message:args(Msg) of
-        {ok, ["State", NewStateStr]} ->
-            NewState = list_to_atom(NewStateStr),
-            [Member ! {state_changed, NewState}
-             || Member <- pg2:get_members(State#state.state_notify_group)];
-        _ -> ok
-    end,
-    {noreply, State};
 
 handle_info({connect_service, ConnectPid, ServicePath}, State=#state{connects=Connects}) ->
     case maps:get(ConnectPid, Connects, false) of
@@ -213,21 +265,15 @@ handle_info(Msg, State=#state{}) ->
     lager:warning("Unhandled info ~p", [Msg]),
     {noreply, State}.
 
-
-terminate(_Reason, State=#state{}) ->
-    ebus_proxy:remove_signal_handler(State#state.proxy, State#state.state_signal_id),
-    pg2:delete(State#state.state_notify_group).
-
 %%
 %% Private
 %%
 
-tech_path(Tech) ->
-    ?CONNMAN_PATH_TECH ++ "/" ++ atom_to_list(Tech).
-
--spec tech_is_enabled(atom(), boolean(), #state{}) -> {ok, boolean()} | {error, term()}.
+-spec tech_is_enabled(technology(), boolean(), #state{}) -> {ok, boolean()} | {error, term()}.
 tech_is_enabled(Tech, Enabled, State=#state{}) ->
-    case ebus_proxy:call(State#state.proxy, tech_path(Tech), "net.connman.Technology.GetProperties") of
+    case ebus_proxy:call(State#state.proxy,
+                         ?CONNMAN_PATH_TECH(Tech),
+                         "net.connman.Technology.GetProperties") of
         {ok, [Map]} -> {ok, maps:get("Powered", Map) == Enabled};
         {error, Error} -> {error, Error}
     end.

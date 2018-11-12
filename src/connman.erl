@@ -7,7 +7,8 @@
 -export([connman/0]).
 %% API
 -export([state/1, state/2,
-         register_state_notify/2, unregister_state_notify/2,
+         register_state_notify/3, register_state_notify/4,
+         unregister_state_notify/4,
          enable/3, scan/2, technologies/1,
          services/1, service_names/1,
          connect/4]).
@@ -71,21 +72,19 @@ state(Pid) ->
 state(Pid, Type) ->
     gen_server:call(Pid, {state, Type}).
 
--spec register_state_notify(pid(), Handler::pid()) -> ok.
-register_state_notify(Pid, Handler) ->
-    register_state_notify(Pid, global, Handler).
+-spec register_state_notify(pid(), Handler::pid(), Info::any())
+                           -> {ok, SignalID::ebus:filter_id()} | {error, term()}.
+register_state_notify(Pid, Handler, Info) ->
+    register_state_notify(Pid, global, Handler, Info).
 
--spec register_state_notify(pid(), state_type(), Handler::pid()) -> ok.
-register_state_notify(Pid, Type, Handler) ->
-    gen_server:cast(Pid, {register_state_notify, Type, Handler}).
+-spec register_state_notify(pid(), state_type(), Handler::pid(), Info::any())
+                           -> {ok, SignalID::ebus:filter_id()} | {error, term()}.
+register_state_notify(Pid, Type, Handler, Info) ->
+    gen_server:call(Pid, {register_state_notify, Type, Handler, Info}).
 
--spec unregister_state_notify(pid(), Handler::pid()) -> ok.
-unregister_state_notify(Pid, Handler) ->
-    unregister_state_notify(Pid, global, Handler).
-
--spec unregister_state_notify(pid(), state_type(), Handler::pid()) -> ok.
-unregister_state_notify(Pid, Type, Handler) ->
-    gen_server:cast(Pid, {unregister_state_notify, Type, Handler}).
+-spec unregister_state_notify(pid(), SignalID::ebus:filter_id(), Handler::pid(), Info::any()) -> ok.
+unregister_state_notify(Pid, SignalID, Handler, Info) ->
+    gen_server:call(Pid, {unregister_state_notify, SignalID, Handler, Info}).
 
 %% @doc Enable or disable the given `Tech'.
 -spec enable(pid(), technology(), boolean()) -> ok | {error, term()}.

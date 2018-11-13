@@ -2,36 +2,32 @@
 
 -behavior(ebus_object).
 
--callback handle_input_request(State::any(), Path::string(), Specs::map()) -> Reply::map() | false.
+-callback handle_input_request(Path::string(), Specs::map()) -> Reply::map() | false.
 
--export([start_link/3, init/1]).
+-export([start_link/1, init/1]).
 -export([handle_message/3, terminate/2]).
 
 -record(state, {
                 proxy :: ebus:proxy(),
-                agent_name :: string(),
-                input_module :: atom(),
-                input_state :: any()
+                agent_name :: string()
                }).
 
-start_link(Proxy, InputModule, InputState) ->
+start_link(Proxy) ->
     AgentName = "/net/helium/connmanctl" ++ integer_to_list(erlang:system_time(millisecond)),
     ebus_object:start_link(ebus_proxy:bus(Proxy), AgentName, ?MODULE,
-                           [Proxy, AgentName, InputModule, InputState], []).
+                           [Proxy, AgentName], []).
 
-init([Proxy, AgentName, InputModule, InputState]) ->
+init([Proxy, AgentName]) ->
     {ok, _} = ebus_proxy:call(Proxy, "/", "net.connman.Manager.RegisterAgent",
                               [object_path], [AgentName]),
     self() ! find_service,
-    {ok, #state{proxy=Proxy, agent_name=AgentName,
-                input_module=InputModule, input_state=InputState}}.
+    {ok, #state{proxy=Proxy, agent_name=AgentName}}.
 
 
-handle_message("net.connman.Agent.RequestInput", Msg,
-               State=#state{input_module=InputModule, input_state=InputState}) ->
+handle_message("net.connman.Agent.RequestInput", Msg, State=#state{}) ->
     case ebus_message:args(Msg) of
         {ok, [ServicePath, Specs]} ->
-            case InputModule:handle_input_request(InputState, ServicePath, Specs) of
+            case connman:handle_input_request(ServicePath, Specs) of
                 false ->
                     lager:info("Failed to handle input request for ~p", [ServicePath]),
                     {reply_error,

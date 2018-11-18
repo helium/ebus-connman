@@ -12,14 +12,17 @@
               }).
 
 %% gen_statem
--export([callback_mode/0, start_link/4, init/1, terminate/2,
+-export([callback_mode/0, start/4, start_link/4, init/1, terminate/2,
          searching/3, connecting/3]).
 
 -define(SEARCH_TIMEOUT, 5000).
--define(CONNECT_RESULT(R), {connect_result, self(), R}).
+-define(CONNECT_RESULT(T, R), {connect_result, T, self(), R}).
 -define(SERVICES_SIGNAL_INFO, connman_connect).
 
 callback_mode() -> state_functions.
+
+start(Proxy, Tech, ServiceName, Handler) ->
+    gen_statem:start(?MODULE, [Proxy, Tech, ServiceName, Handler], []).
 
 start_link(Proxy, Tech, ServiceName, Handler) ->
     gen_statem:start_link(?MODULE, [Proxy, Tech, ServiceName, Handler], []).
@@ -42,9 +45,11 @@ searching(info, find_service, Data=#data{handler=Handler}) ->
             erlang:send_after(?SEARCH_TIMEOUT, self(), timeout_find_service),
             {keep_state, Data, {next_event, info, {find_service, Services}}};
         {error, timeout} ->
-            erlang:send_after(1000, self(), find_service);
+            lager:notice("Timeout finding SSID ~p, retrying", [Data#data.service_name]),
+            erlang:send_after(1000, self(), find_service),
+            keep_state_and_data;
         {error, Error} ->
-            Handler ! ?CONNECT_RESULT({error, Error}),
+            Handler ! ?CONNECT_RESULT(Data#data.tech, {error, Error}),
             {stop, normal, Data}
 
     end;
@@ -67,28 +72,28 @@ searching(info, {find_service, Services}, Data=#data{}) ->
              {next_event, info, connect_service}}
     end;
 searching(info, timeout_find_service, Data=#data{handler=Handler}) ->
-    Handler ! ?CONNECT_RESULT({error, not_found}),
+    Handler ! ?CONNECT_RESULT(Data#data.tech, {error, not_found}),
     {stop, normal, Data};
 searching(Type, Msg, Data=#data{}) ->
     handle_event(Type, Msg, Data).
 
 
-connecting(info, connect_service, Data=#data{proxy=Proxy, service_path=Path, handler=Handler}) ->
+connecting(info, connect_service, Data=#data{proxy=Proxy, service_path=Path, handler=Handler, tech=Tech}) ->
     lager:debug("Connecting to ~p at ~p", [Data#data.service_name, Path]),
-    Handler ! {connect_service, self(), Path},
+    Handler ! {connect_service, Tech, self(), Path},
     case ebus_proxy:call(Proxy, Path, "net.connman.Service.Connect") of
         {error, unknown} ->
             %% Service disappeared while trying to connect. Scan and go back to searching
             scan(Data#data.tech, Proxy),
             {next_state, searching, Data};
         {error,"net.connman.Error.AlreadyConnected"} ->
-            Handler ! ?CONNECT_RESULT(ok),
+            Handler ! ?CONNECT_RESULT(Tech, ok),
             {stop, normal, Data};
         {ok, []} ->
-            Handler ! ?CONNECT_RESULT(ok),
+            Handler ! ?CONNECT_RESULT(Tech, ok),
             {stop, normal, Data};
         Result ->
-            Handler ! ?CONNECT_RESULT(Result),
+            Handler ! ?CONNECT_RESULT(Tech, Result),
             {stop, normal, Data}
     end;
 connecting(Type, Msg, Data=#data{}) ->

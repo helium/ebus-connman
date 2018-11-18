@@ -9,7 +9,7 @@
          unregister_state_notify/3,
          enable/2, scan/1, technologies/0,
          services/0, service_names/0,
-         connect/3]).
+         connect/4]).
 %% connman_agent
 -export([handle_input_request/2]).
 %% Private
@@ -33,7 +33,9 @@
 -define(CONNMAN_PATH_TECH(T), "/net/connman/technology" ++ "/" ++ atom_to_list(T)).
 
 -record(connect, {
-                  from :: term(),
+                  handler :: pid(),
+                  pid :: pid(),
+                  service_name :: string(),
                   service_path=undefined :: string() | undefined,
                   service_pass :: string()
                  }).
@@ -42,8 +44,7 @@
                 bus :: pid(),
                 proxy :: ebus:proxy(),
                 agent :: pid(),
-                connects=#{} :: #{pid() => #connect{}},
-                signal_handlers=#{} ::  #{{ebus:object_path(), string()} => {ebus:signal_id(), [pid()]}}
+                connects=#{} :: #{technology() => #connect{}}
                }).
 
 %%
@@ -116,8 +117,9 @@ service_names() ->
             {error, Error}
     end.
 
-connect(Tech, ServiceName, ServicePass) ->
-    gen_server:call(?MODULE, {connect, Tech, ServiceName, ServicePass}, infinity).
+-spec connect(technology(), string(), string(), pid()) -> ok | {error, term()}.
+connect(Tech, ServiceName, ServicePass, Handler) ->
+    gen_server:call(?MODULE, {connect, Tech, ServiceName, ServicePass, Handler}).
 
 handle_input_request(ServicePath, Specs) ->
     gen_server:call(?MODULE, {input_request, ServicePath, Specs}).
@@ -180,14 +182,6 @@ handle_call(technologies, _From, State=#state{}) ->
 handle_call(services, _From, State=#state{}) ->
     {reply, get_services(State#state.proxy), State};
 
-handle_call({connect, Tech, ServiceName, ServicePass}, From, State=#state{}) ->
-    lager:debug("Starting connect to ~p", [ServiceName]),
-    {ok, ConnectPid} = connman_connect:start_link(State#state.proxy, Tech, ServiceName, self()),
-    Connects = maps:put(ConnectPid,
-                        #connect{service_pass=ServicePass, from=From},
-                        State#state.connects),
-    {noreply, State#state{connects=Connects}};
-
 %%
 %% register_state_notify
 %%
@@ -229,26 +223,44 @@ handle_call({input_request, ServicePath, Specs}, _From, State=#state{connects=Co
             {reply, handle_request_input(Specs, ServicePass), State}
     end;
 
+handle_call({connect, Tech, ServiceName, ServicePass, Handler}, _From, State=#state{connects=Connects}) ->
+    case maps:get(Tech, Connects, false) of
+        false ->
+            {ok, ConnectPid} = connman_connect:start(State#state.proxy,
+                                                     Tech, ServiceName,
+                                                     self()),
+            NewConnects = maps:put(Tech,
+                                   #connect{pid=ConnectPid,
+                                            service_name=ServiceName,
+                                            service_pass=ServicePass,
+                                            handler=Handler},
+                                   Connects),
+            {reply, ok, State#state{connects=NewConnects}};
+        _ ->
+            {reply, {error, already_connecting}, State}
+    end;
+
 handle_call(Msg, _From, State=#state{}) ->
     lager:warning("Unhandled call ~p", [Msg]),
     {reply, ok, State}.
+
 
 handle_cast(Msg, State=#state{}) ->
     lager:warning("Unhandled cast ~p", [Msg]),
     {noreply, State}.
 
 
-handle_info({connect_service, ConnectPid, ServicePath}, State=#state{connects=Connects}) ->
-    case maps:get(ConnectPid, Connects, false) of
+handle_info({connect_service, Tech, ConnectPid, ServicePath}, State=#state{connects=Connects}) ->
+    case maps:get(Tech, Connects, false) of
         false -> {noreply, State};
-        C=#connect{} ->
+        C=#connect{pid=ConnectPid} ->
             NewConnects = maps:put(ConnectPid, C#connect{service_path=ServicePath}, Connects),
             {noreply, State#state{connects=NewConnects}}
     end;
-handle_info({connect_result, ConnectPid, Result}, State=#state{}) ->
-    case maps:take(ConnectPid, State#state.connects) of
-        {#connect{from=From}, Connects} ->
-            gen_server:reply(From, Result),
+handle_info({connect_result, Tech, ConnectPid, Result}, State=#state{}) ->
+    case maps:take(Tech, State#state.connects) of
+        {#connect{handler=Handler, pid=ConnectPid}, Connects} ->
+            Handler ! {connect_result, Tech, Result},
             {noreply, State#state{connects=Connects}};
         _ ->
             {noreply, State}

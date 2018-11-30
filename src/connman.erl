@@ -9,7 +9,7 @@
          unregister_state_notify/3,
          enable/2, scan/1, technologies/0,
          services/0, service_names/0,
-         connect/4]).
+         connect/4, start_agent/0]).
 %% connman_agent
 -export([handle_input_request/2]).
 %% Private
@@ -43,7 +43,7 @@
 -record(state, {
                 bus :: pid(),
                 proxy :: ebus:proxy(),
-                agent :: pid(),
+                agent=undefined :: pid() | undefined,
                 connects=#{} :: #{technology() => #connect{}}
                }).
 
@@ -121,6 +121,13 @@ service_names() ->
 connect(Tech, ServiceName, ServicePass, Handler) ->
     gen_server:call(?MODULE, {connect, Tech, ServiceName, ServicePass, Handler}).
 
+
+%% @doc Starts the agent that will respond to agent callbacks from
+%% connmand. The agent is not started by default.
+-spec start_agent() -> ok | {error, term()}.
+start_agent() ->
+    gen_server:call(?MODULE, start_agent).
+
 handle_input_request(ServicePath, Specs) ->
     gen_server:call(?MODULE, {input_request, ServicePath, Specs}).
 
@@ -134,9 +141,7 @@ start_link() ->
 
 init([Bus]) ->
     {ok, Proxy} = ebus_proxy:start_link(Bus, ?CONNMAN_SERVICE, []),
-    {ok, AgentPid} = connman_agent:start_link(Proxy),
-    {ok, #state{bus=Bus, proxy=Proxy, agent=AgentPid}}.
-
+    {ok, #state{bus=Bus, proxy=Proxy}}.
 
 handle_call({enable, Tech, Enable}, _From, State=#state{}) ->
     case tech_is_enabled(Tech, Enable, State)of
@@ -238,6 +243,18 @@ handle_call({connect, Tech, ServiceName, ServicePass, Handler}, _From, State=#st
             {reply, ok, State#state{connects=NewConnects}};
         _ ->
             {reply, {error, already_connecting}, State}
+    end;
+handle_call(start_agent, _From, State=#state{proxy=Proxy}) ->
+    case State#state.agent of
+        undefined ->
+            case connman_agent:start_link(Proxy) of
+                {ok, Agent} ->
+                    {reply, ok, State#state{agent=Agent}};
+                {error, Error} ->
+                    {reply, {error, Error}, State}
+            end;
+        _ ->
+            {reply, ok, State}
     end;
 
 handle_call(Msg, _From, State=#state{}) ->

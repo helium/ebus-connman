@@ -1,0 +1,3 @@
+-define(CONNMAN_SERVICE, "net.connman").
+-define(CONNMAN_PATH_TECH, "/net/connman/technology").
+-define(CONNMAN_PATH_TECH(T), "/net/connman/technology" ++ "/" ++ atom_to_list(T)).

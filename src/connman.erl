@@ -2,6 +2,7 @@
 
 -behavior(gen_server).
 -behavior(connman_agent).
+-include("connman.hrl").
 
 %% API
 -export([state/0, state/1,
@@ -12,25 +13,18 @@
          connect/4, start_agent/0]).
 %% connman_agent
 -export([handle_input_request/2]).
-%% Private
--export([get_services/1]).
-
 
 -type service_descriptor() :: {ebus:object_path(), map()}.
 -export_type([service_descriptor/0]).
 
 %% gen_server
--export([start_link/0, init/1, handle_call/3, handle_cast/2, handle_info/2]).
+-export([start_link/1, init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -type technology() :: wifi | ethernet | bluetooth.
 -type state() :: idle | ready | online | disabled.
 -type state_type() :: global | {tech, technology()}.
 -type service() :: {ebus:object_path(), map()}.
 -export_type([service/0, technology/0, state_type/0, state/0]).
-
--define(CONNMAN_SERVICE, "net.connman").
--define(CONNMAN_PATH_TECH, "/net/connman/technology").
--define(CONNMAN_PATH_TECH(T), "/net/connman/technology" ++ "/" ++ atom_to_list(T)).
 
 -record(connect, {
                   handler :: pid(),
@@ -41,7 +35,6 @@
                  }).
 
 -record(state, {
-                bus :: pid(),
                 proxy :: ebus:proxy(),
                 agent=undefined :: pid() | undefined,
                 connects=#{} :: #{technology() => #connect{}}
@@ -50,13 +43,6 @@
 %%
 %% API
 %%
-
--spec get_services(ebus:proxy()) -> {ok, [service_descriptor()]}  | {error, term()}.
-get_services(Proxy) ->
-    case ebus_proxy:call(Proxy, "net.connman.Manager.GetServices") of
-        {ok, [Services]} -> {ok, Services};
-        {error, Error} -> {error, Error}
-    end.
 
 -spec state() -> state().
 state() ->
@@ -92,8 +78,7 @@ enable(Tech, Enable) ->
 %% `wifi'.
 -spec scan(technology()) -> ok | {error, term()}.
 scan(Tech) ->
-    gen_server:call(?MODULE, {scan, Tech}).
-
+    connman_services:scan(Tech).
 
 %% doc Returns the types of currently supported technologies.
 -spec technologies() -> [technology()].
@@ -101,21 +86,11 @@ technologies() ->
     gen_server:call(?MODULE, technologies).
 
 services() ->
-    gen_server:call(?MODULE, services, infinity).
+    connman_services:services().
 
 -spec service_names() -> [string()].
 service_names() ->
-    case services() of
-        {ok, Services} ->
-            lists:foldl(fun({_, M}, Acc) ->
-                                case maps:get("Name", M, false) of
-                                    false -> Acc;
-                                    Name -> [Name | Acc]
-                                end
-                        end, [], Services);
-        {error, Error} ->
-            {error, Error}
-    end.
+    connman_services:service_names().
 
 -spec connect(technology(), string(), string(), pid()) -> ok | {error, term()}.
 connect(Tech, ServiceName, ServicePass, Handler) ->
@@ -135,13 +110,12 @@ handle_input_request(ServicePath, Specs) ->
 %% gen_server
 %%
 
-start_link() ->
-    {ok, Bus} = ebus:system(),
+start_link(Bus) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [Bus], []).
 
 init([Bus]) ->
     {ok, Proxy} = ebus_proxy:start_link(Bus, ?CONNMAN_SERVICE, []),
-    {ok, #state{bus=Bus, proxy=Proxy}}.
+    {ok, #state{proxy=Proxy}}.
 
 handle_call({enable, Tech, Enable}, _From, State=#state{}) ->
     case tech_is_enabled(Tech, Enable, State)of
@@ -173,10 +147,6 @@ handle_call({state, {tech, Tech}}, _From, State=#state{}) ->
                 {error, Error} -> {error, Error}
             end,
     {reply, Reply, State};
-handle_call({scan, Tech}, _From, State=#state{}) ->
-    Reply = ebus_proxy:send(State#state.proxy, ?CONNMAN_PATH_TECH(Tech),
-                            "net.connman.Technology.Scan"),
-    {reply, Reply, State};
 handle_call(technologies, _From, State=#state{}) ->
     Reply = case ebus_proxy:call(State#state.proxy, "net.connman.Manager.GetTechnologies") of
                 {ok, [Technologies]} ->
@@ -184,8 +154,6 @@ handle_call(technologies, _From, State=#state{}) ->
                 {error, Error} -> {error, Error}
             end,
     {reply, Reply, State};
-handle_call(services, _From, State=#state{}) ->
-    {reply, get_services(State#state.proxy), State};
 
 %%
 %% register_state_notify

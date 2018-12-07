@@ -2,22 +2,29 @@
 
 -behaviour(supervisor).
 
--export([start_link/0, init/1, connman/0]).
-
-connman() ->
-    Children = supervisor:which_children(?MODULE),
-    {connman, Pid, _, _} = lists:keyfind(connman, 1, Children),
-    {ok, Pid}.
+-export([start_link/0, start_link/1, init/1]).
 
 -spec start_link() -> {ok, pid()}.
 start_link() ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+    {ok, Bus} = ebus:system(),
+    start_link(Bus).
 
-init([]) ->
-    ChildSpec = #{ id => connman,
-                   start => {connman, start_link, []},
-                   restart => temporary,
-                   shutdown => 1000,
-                   type => worker
-                 },
-    {ok, {{one_for_one, 1, 5}, [ChildSpec]}}.
+-spec start_link(ebus:bus()) -> {ok, pid()}.
+start_link(Bus) ->
+    supervisor:start_link(?MODULE, [Bus]).
+
+init([Bus]) ->
+    ChildSpecs = [
+                  #{ id => connman,
+                     start => {connman, start_link, [Bus]},
+                     restart => permanent,
+                     shutdown => 1000,
+                     type => worker
+                   },
+                  #{ id => services,
+                     start => {connman_services, start_link, [Bus]},
+                     restart => permanent,
+                     type => worker
+                   }
+                 ],
+    {ok, {{one_for_all, 1, 5}, ChildSpecs}}.

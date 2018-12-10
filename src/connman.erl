@@ -44,13 +44,13 @@
 %% API
 %%
 
--spec state() -> state().
+-spec state() -> {ok, state()} | {error, term()}.
 state() ->
     state(global).
 
 %% @doc Gets the current state of a given `{tech, Technology}'
 %% technology or the "global" state.
--spec state(state_type())-> state().
+-spec state(state_type())-> {ok, state()} | {error, term()}.
 state(Type) ->
     gen_server:call(?MODULE, {state, Type}).
 

@@ -138,10 +138,10 @@ handle_call({state, {tech, Tech}}, _From, State=#state{}) ->
                                  "net.connman.Technology.GetProperties") of
                 {ok, [Map]} ->
                     case maps:get("Connected", Map) of
-                        true -> online;
+                        true -> {ok, online};
                         false -> case maps:get("Powered", Map) of
-                                     true -> idle;
-                                     false -> disabled
+                                     true -> {ok, idle};
+                                     false -> {ok, disabled}
                                  end
                     end;
                 {error, Error} -> {error, Error}

@@ -41,7 +41,7 @@ searching(info, find_service, Data=#data{}) ->
              {next_event, info, connect_service}}
     end;
 searching(info, timeout_find_service, Data=#data{handler=Handler}) ->
-    lager:info("Failed to find SSID ~p", Data#data.service_name),
+    lager:info("Failed to find SSID ~p", [Data#data.service_name]),
     Handler ! ?CONNECT_RESULT(Data#data.tech, {error, not_found}),
     {stop, normal, Data};
 searching(Type, Msg, Data=#data{}) ->

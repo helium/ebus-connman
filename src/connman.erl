@@ -20,7 +20,7 @@
 %% gen_server
 -export([start_link/1, init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
--type technology() :: wifi | ethernet | bluetooth.
+-type technology() :: wifi | ethernet | bluetooth | cellular.
 -type state() :: idle | ready | online | disabled.
 -type state_type() :: global | {tech, technology()}.
 -type service() :: {ebus:object_path(), map()}.

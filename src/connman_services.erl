@@ -15,7 +15,7 @@
 %% gen_server
 -export([start_link/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 % APIA
--export([services/0, service_names/0, scan/1]).
+-export([services/0, service_names/0, service_named/1, scan/1]).
 
 %% API
 
@@ -36,6 +36,23 @@ service_names() ->
                         end
                 end, [], services()).
 
+-spec service_named(string() | {connman:service_key(), string()}) -> connman:service_descriptor() | not_found.
+service_named(Name) when is_list(Name) ->
+    service_named({name, Name});
+service_named({Key, Name}) ->
+    Filter = case Key of
+                 path -> fun({Path, _}) ->
+                                 Path == Name
+                         end;
+                 name ->
+                     fun({_, M}) ->
+                             maps:get("Name", M, false) == Name
+                     end
+             end,
+    case lists:filter(Filter, services()) of
+        [] -> not_found;
+        [Entry] -> Entry
+    end.
 
 start_link(Bus) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [Bus], []).

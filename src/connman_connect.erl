@@ -32,8 +32,8 @@ init([Proxy, Tech, ServiceName, Handler]) ->
      {next_event, info, find_service}}.
 
 searching(info, find_service, Data=#data{}) ->
-    case find_service(Data#data.service_name, connman:services()) of
-        false ->
+    case connman:service_named(Data#data.service_name) of
+        not_found ->
             erlang:send_after(1000, self(), find_service),
             keep_state_and_data;
         {Path, _Map} ->
@@ -86,12 +86,3 @@ handle_event(info, timeout_find_service, #data{}) ->
 handle_event(Type , Msg, #data{}) ->
     lager:warning("Unhandled event ~p: ~p", [Type, Msg]),
     keep_state_and_data.
-
--spec find_service(string(), list(map())) -> false | connman:service_descriptor().
-find_service(Name, Services) ->
-    case lists:filter(fun({_Path, Map}) ->
-                              maps:get("Name", Map, false) == Name
-                      end, Services) of
-        [] -> false;
-        [Entry] -> Entry
-    end.

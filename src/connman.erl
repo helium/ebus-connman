@@ -9,12 +9,13 @@
          register_state_notify/2, register_state_notify/3,
          unregister_state_notify/3,
          enable/2, scan/1, technologies/0,
-         services/0, service_names/0,
-         connect/4, start_agent/0]).
+         services/0, service_names/0, service_named/1,
+         connect/4, disconnect/2, start_agent/0]).
 %% connman_agent
 -export([handle_input_request/2]).
 
 -type service_descriptor() :: {ebus:object_path(), map()}.
+-type service_key() :: path | name.
 -export_type([service_descriptor/0]).
 
 %% gen_server
@@ -26,8 +27,9 @@
 -type service() :: {ebus:object_path(), map()}.
 -export_type([service/0, technology/0, state_type/0, state/0]).
 
--record(connect, {
+-record(connect, {tech :: technology(),
                   handler :: pid(),
+                  monitor :: reference(),
                   pid :: pid(),
                   service_name :: string(),
                   service_path=undefined :: string() | undefined,
@@ -85,6 +87,7 @@ scan(Tech) ->
 technologies() ->
     gen_server:call(?MODULE, technologies).
 
+-spec services() -> [service_descriptor()].
 services() ->
     connman_services:services().
 
@@ -92,10 +95,21 @@ services() ->
 service_names() ->
     connman_services:service_names().
 
--spec connect(technology(), string(), string(), pid()) -> ok | {error, term()}.
-connect(Tech, ServiceName, ServicePass, Handler) ->
-    gen_server:call(?MODULE, {connect, Tech, ServiceName, ServicePass, Handler}).
+-spec service_named(string() | {service_key(), string()}) -> not_found | service_descriptor().
+service_named(Name) ->
+    connman_services:service_named(Name).
 
+-spec connect(technology(), string() | {service_key(), string()}, string(), pid()) -> ok | {error, term()}.
+connect(Tech, Name, ServicePass, Handler) ->
+   gen_server:call(?MODULE, {connect, Tech, Name, ServicePass, Handler}).
+
+%% @doc Disconnect the named service for a given technology.
+-spec disconnect(technology(),  string() | {service_key(), string()}) -> ok | {error, term()}.
+disconnect(_Tech, Name) ->
+    case service_named(Name) of
+        not_found -> {error, not_found};
+        {Path, _} -> gen_server:call(?MODULE, {disconnect, Path})
+    end.
 
 %% @doc Starts the agent that will respond to agent callbacks from
 %% connmand. The agent is not started by default.
@@ -196,14 +210,24 @@ handle_call({input_request, ServicePath, Specs}, _From, State=#state{connects=Co
             {reply, handle_request_input(Specs, ServicePass), State}
     end;
 
+handle_call({disconnect, ServicePath}, _From, State=#state{}) ->
+    case ebus_proxy:call(State#state.proxy, ServicePath, "net.connman.Service.Disconnect") of
+        {ok, []} ->
+            {reply, ok, State};
+        {error, Error} ->
+            {reply, {error, Error}, State}
+    end;
 handle_call({connect, Tech, ServiceName, ServicePass, Handler}, _From, State=#state{connects=Connects}) ->
     case maps:get(Tech, Connects, false) of
         false ->
             {ok, ConnectPid} = connman_connect:start(State#state.proxy,
                                                      Tech, ServiceName,
                                                      self()),
+            ConnectMonitor = erlang:monitor(process, ConnectPid),
             NewConnects = maps:put(Tech,
-                                   #connect{pid=ConnectPid,
+                                   #connect{tech=Tech,
+                                            pid=ConnectPid,
+                                            monitor=ConnectMonitor,
                                             service_name=ServiceName,
                                             service_pass=ServicePass,
                                             handler=Handler},
@@ -244,12 +268,22 @@ handle_info({connect_service, Tech, ConnectPid, ServicePath}, State=#state{conne
     end;
 handle_info({connect_result, Tech, ConnectPid, Result}, State=#state{}) ->
     case maps:take(Tech, State#state.connects) of
-        {#connect{handler=Handler, pid=ConnectPid}, Connects} ->
+        {#connect{handler=Handler, monitor=Monitor, pid=ConnectPid}, Connects} ->
+            erlang:demonitor(Monitor, [flush]),
             Handler ! {connect_result, Tech, Result},
             {noreply, State#state{connects=Connects}};
         _ ->
             {noreply, State}
     end;
+handle_info({'DOWN', _Monitor, process, Pid, Error}, State=#state{connects=Connects}) when Error /= normal ->
+    case lists:keyfind(Pid, #connect.pid, maps:values(Connects)) of
+        false ->
+            {noreply, State};
+        #connect{handler=Handler, tech=Tech} ->
+            Handler ! {connect_result, Tech, {error, Error}},
+            {noreply, State#state{connects=maps:remove(Tech, Connects)}}
+    end;
+
 handle_info(Msg, State=#state{}) ->
     lager:warning("Unhandled info ~p", [Msg]),
     {noreply, State}.

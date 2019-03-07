@@ -6,7 +6,7 @@
                tech :: atom(),
                handler :: pid(),
                proxy :: pid(),
-               service_name :: string(),
+               service_name=undefined :: string() | undefined,
                service_path=undefined :: string() | undefined
               }).
 
@@ -19,17 +19,26 @@
 
 callback_mode() -> state_functions.
 
-start(Proxy, Tech, ServiceName, Handler) ->
-    gen_statem:start(?MODULE, [Proxy, Tech, ServiceName, Handler], []).
+start(Proxy, Tech, Service, Handler) ->
+    gen_statem:start(?MODULE, [Proxy, Tech, Service, Handler], []).
 
-start_link(Proxy, Tech, ServiceName, Handler) ->
-    gen_statem:start_link(?MODULE, [Proxy, Tech, ServiceName, Handler], []).
+start_link(Proxy, Tech, Service, Handler) ->
+    gen_statem:start_link(?MODULE, [Proxy, Tech, Service, Handler], []).
 
-init([Proxy, Tech, ServiceName, Handler]) ->
-    erlang:send_after(?SEARCH_TIMEOUT, self(), timeout_find_service),
-    {ok, searching,
-     #data{proxy=Proxy, tech=Tech, handler=Handler, service_name=ServiceName},
-     {next_event, info, find_service}}.
+init([Proxy, Tech, Service, Handler]) ->
+    Data = #data{proxy=Proxy, tech=Tech, handler=Handler,
+                 service_name=connman:service_name(Service),
+                 service_path=connman:service_path(Service)},
+    case Data#data.service_path of
+        undefined ->
+            %% Assume that we were at least given a service name
+            erlang:send_after(?SEARCH_TIMEOUT, self(), timeout_find_service),
+            {ok, searching, Data,
+             {next_event, info, find_service}};
+        _ ->
+            {ok, connecting, Data,
+             {next_event, info, connect_service}}
+    end.
 
 searching(info, find_service, Data=#data{}) ->
     case connman:service_named(Data#data.service_name) of
@@ -49,7 +58,7 @@ searching(Type, Msg, Data=#data{}) ->
 
 
 connecting(info, connect_service, Data=#data{proxy=Proxy, service_path=Path, handler=Handler, tech=Tech}) ->
-    lager:debug("Connecting to ~p at ~p", [Data#data.service_name, Path]),
+    lager:info("Connecting to ~p at ~p", [Data#data.service_name, Path]),
     Handler ! {connect_service, Tech, self(), Path},
     case ebus_proxy:call(Proxy, Path, "net.connman.Service.Connect") of
         {error, unknown} ->

@@ -10,9 +10,10 @@
          unregister_state_notify/3,
          enable/2, scan/1, technologies/0,
          services/0, service_names/0, service_named/1,
+         service_name/1, service_path/1,
          connect/4, disconnect/2, start_agent/0]).
 %% connman_agent
--export([handle_input_request/2]).
+-export([agent_input_request/2, agent_cancel/0, agent_retry/1]).
 
 -type service_descriptor() :: {ebus:object_path(), map()}.
 -type service_key() :: path | name.
@@ -100,16 +101,35 @@ service_named(Name) ->
     connman_services:service_named(Name).
 
 -spec connect(technology(), string() | {service_key(), string()}, string(), pid()) -> ok | {error, term()}.
-connect(Tech, Name, ServicePass, Handler) ->
-   gen_server:call(?MODULE, {connect, Tech, Name, ServicePass, Handler}).
+connect(Tech, Name, ServicePass, Handler) when is_list(Name) ->
+    connect(Tech, {name, Name}, ServicePass, Handler);
+connect(Tech, Service, ServicePass, Handler) when is_tuple(Service) ->
+    gen_server:call(?MODULE, {connect, Tech, Service, ServicePass, Handler}).
+
+
+-spec service_name({service_key(), string()}) -> string() | undefined.
+service_name({name, ServiceName}) ->
+    ServiceName;
+service_name(_) ->
+    undefined.
+
+-spec service_path({service_key(), string()}) -> string() | undefined.
+service_path({path, ServicePath}) ->
+    ServicePath;
+service_path(_) ->
+    undefined.
 
 %% @doc Disconnect the named service for a given technology.
 -spec disconnect(technology(),  string() | {service_key(), string()}) -> ok | {error, term()}.
-disconnect(_Tech, Name) ->
+disconnect(Tech, Name) when is_list(Name) ->
+    disconnect(Tech, {name, Name});
+disconnect(Tech, {name, Name}) ->
     case service_named(Name) of
         not_found -> {error, not_found};
-        {Path, _} -> gen_server:call(?MODULE, {disconnect, Path})
-    end.
+        {Path, _} -> disconnect(Tech, {path, Path})
+    end;
+disconnect(_Tech, {path, Path}) ->
+    gen_server:call(?MODULE, {disconnect, Path}).
 
 %% @doc Starts the agent that will respond to agent callbacks from
 %% connmand. The agent is not started by default.
@@ -117,8 +137,16 @@ disconnect(_Tech, Name) ->
 start_agent() ->
     gen_server:call(?MODULE, start_agent).
 
-handle_input_request(ServicePath, Specs) ->
-    gen_server:call(?MODULE, {input_request, ServicePath, Specs}).
+agent_input_request(ServicePath, Specs) ->
+    gen_server:call(?MODULE, {agent_input_request, ServicePath, Specs}).
+
+agent_cancel() ->
+    gen_server:cast(?MODULE, agent_cancel).
+
+agent_retry(ServicePath) ->
+    gen_server:cast(?MODULE, {agent_retry, ServicePath}).
+
+
 
 %%
 %% gen_server
@@ -201,7 +229,7 @@ handle_call({unregister_state_notify, SignalID, Handler, Info}, _From, State=#st
 %% input_request
 %%
 
-handle_call({input_request, ServicePath, Specs}, _From, State=#state{connects=Connects}) ->
+handle_call({agent_input_request, ServicePath, Specs}, _From, State=#state{connects=Connects}) ->
     lager:debug("Looking up input resopnse for ~p", [ServicePath]),
     case lists:keyfind(ServicePath, #connect.service_path, maps:values(Connects)) of
         false ->
@@ -217,24 +245,13 @@ handle_call({disconnect, ServicePath}, _From, State=#state{}) ->
         {error, Error} ->
             {reply, {error, Error}, State}
     end;
-handle_call({connect, Tech, ServiceName, ServicePass, Handler}, _From, State=#state{connects=Connects}) ->
-    case maps:get(Tech, Connects, false) of
-        false ->
-            {ok, ConnectPid} = connman_connect:start(State#state.proxy,
-                                                     Tech, ServiceName,
-                                                     self()),
-            ConnectMonitor = erlang:monitor(process, ConnectPid),
-            NewConnects = maps:put(Tech,
-                                   #connect{tech=Tech,
-                                            pid=ConnectPid,
-                                            monitor=ConnectMonitor,
-                                            service_name=ServiceName,
-                                            service_pass=ServicePass,
-                                            handler=Handler},
-                                   Connects),
-            {reply, ok, State#state{connects=NewConnects}};
-        _ ->
-            {reply, {error, already_connecting}, State}
+
+handle_call({connect, Tech, Service, ServicePass, Handler}, _From, State=#state{}) ->
+    case start_connect(Tech, Service, ServicePass, Handler, State) of
+        {ok, NewState} ->
+            {reply, ok, NewState};
+        {Error, NewState} ->
+            {reply, Error, NewState}
     end;
 handle_call(start_agent, _From, State=#state{proxy=Proxy}) ->
     case State#state.agent of
@@ -254,6 +271,27 @@ handle_call(Msg, _From, State=#state{}) ->
     {reply, ok, State}.
 
 
+
+handle_cast(agent_cancel, State=#state{}) ->
+    lager:info("Agent mentions a canceled connect"),
+    {noreply, State};
+handle_cast({agent_retry, ServicePath}, State=#state{}) ->
+    case lists:keyfind(ServicePath, #connect.service_path, maps:values(State#state.connects)) of
+        false ->
+            lager:info("Ignoring agent retry request for unknown: ~p", [ServicePath]),
+            {noreply, State};
+        #connect{tech=Tech, service_pass=ServicePass, handler=Handler} ->
+            case start_connect(Tech,
+                               {path, ServicePath}, ServicePass, Handler,
+                               drop_connect(Tech, State)) of
+                {ok, NewState} ->
+                    {noreply, NewState};
+                {Error, NewState} ->
+                    lager:warning("Failed to start connect retry for ~p: ~p", [ServicePath, Error]),
+                    {noreply, NewState}
+            end
+    end;
+
 handle_cast(Msg, State=#state{}) ->
     lager:warning("Unhandled cast ~p", [Msg]),
     {noreply, State}.
@@ -263,7 +301,7 @@ handle_info({connect_service, Tech, ConnectPid, ServicePath}, State=#state{conne
     case maps:get(Tech, Connects, false) of
         false -> {noreply, State};
         C=#connect{pid=ConnectPid} ->
-            NewConnects = maps:put(ConnectPid, C#connect{service_path=ServicePath}, Connects),
+            NewConnects = maps:put(Tech, C#connect{service_path=ServicePath}, Connects),
             {noreply, State#state{connects=NewConnects}}
     end;
 handle_info({connect_result, Tech, ConnectPid, Result}, State=#state{}) ->
@@ -283,7 +321,6 @@ handle_info({'DOWN', _Monitor, process, Pid, Error}, State=#state{connects=Conne
             Handler ! {connect_result, Tech, {error, Error}},
             {noreply, State#state{connects=maps:remove(Tech, Connects)}}
     end;
-
 handle_info(Msg, State=#state{}) ->
     lager:warning("Unhandled info ~p", [Msg]),
     {noreply, State}.
@@ -291,6 +328,39 @@ handle_info(Msg, State=#state{}) ->
 %%
 %% Private
 %%
+
+-spec start_connect(technology(), {service_key(), string()}, string(), pid(), #state{})
+                   -> {ok, #state{}} | {{error, term()}, #state{}}.
+start_connect(Tech, Service, ServicePass, Handler, State=#state{connects=Connects}) ->
+    case maps:get(Tech, Connects, false) of
+        false ->
+            {ok, ConnectPid} = connman_connect:start(State#state.proxy,
+                                                     Tech, Service,
+                                                     self()),
+            ConnectMonitor = erlang:monitor(process, ConnectPid),
+            NewConnects = maps:put(Tech,
+                                   #connect{tech=Tech,
+                                            pid=ConnectPid,
+                                            monitor=ConnectMonitor,
+                                            service_name=service_name(Service),
+                                            service_path=service_path(Service),
+                                            service_pass=ServicePass,
+                                            handler=Handler},
+                                   Connects),
+            {ok, State#state{connects=NewConnects}};
+        _ ->
+            {{error, already_connecting}, State}
+    end.
+
+-spec drop_connect(technology(), #state{}) -> #state{}.
+drop_connect(Tech, State=#state{}) ->
+    case maps:take(Tech, State#state.connects) of
+        error ->
+            State;
+        {#connect{monitor=Monitor}, Connects} ->
+            erlang:demonitor(Monitor, [flush]),
+            State#state{connects=Connects}
+    end.
 
 -spec tech_is_enabled(technology(), boolean(), #state{}) -> {ok, boolean()} | {error, term()}.
 tech_is_enabled(Tech, Enabled, State=#state{}) ->

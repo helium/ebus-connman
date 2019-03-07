@@ -2,7 +2,9 @@
 
 -behavior(ebus_object).
 
--callback handle_input_request(Path::string(), Specs::map()) -> Reply::map() | false.
+-callback agent_input_request(Path::string(), Specs::map()) -> Reply::map() | false.
+-callback agent_cancel() -> ok.
+-callback agent_retry(Path::string()) -> ok.
 
 -export([start_link/1, init/1]).
 -export([handle_message/3, terminate/2]).
@@ -27,7 +29,7 @@ init([Proxy, AgentName]) ->
 handle_message("net.connman.Agent.RequestInput", Msg, State=#state{}) ->
     case ebus_message:args(Msg) of
         {ok, [ServicePath, Specs]} ->
-            case connman:handle_input_request(ServicePath, Specs) of
+            case connman:agent_input_request(ServicePath, Specs) of
                 false ->
                     lager:info("Failed to handle input request for ~p", [ServicePath]),
                     {reply_error,
@@ -41,6 +43,24 @@ handle_message("net.connman.Agent.RequestInput", Msg, State=#state{}) ->
             lager:warning("Error in input request: ~p", [Error]),
             {noreply, State}
     end;
+handle_message("net.connman.Agent.ReportError", Msg, State=#state{}) ->
+    case ebus_message:args(Msg) of
+        {ok, [ServicePath, Error]} ->
+            case Error of
+                "net.connman.Agent.Error.Retry" ->
+                    connman:agent_retry(ServicePath),
+                    {noreply, State};
+                Other ->
+                    lager:warning("Could not handle ReportError: ~p", [Other]),
+                    {noreply, State}
+            end;
+        {error, Error} ->
+            lager:warning("Error in ReportError arguments: ~p", [Error]),
+            {noreply, State}
+    end;
+handle_message("net.connman.Agent.Cancel", _Msg, State=#state{}) ->
+    connman:agent_cancel(),
+    {noreply, State};
 handle_message(Member, _Msg, State=#state{}) ->
     lager:warning("Unhandled message ~p", [Member]),
     {noreply, State}.

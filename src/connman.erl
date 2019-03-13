@@ -13,7 +13,10 @@
          service_name/1, service_path/1,
          connect/4, disconnect/2, start_agent/0]).
 %% connman_agent
--export([agent_input_request/2, agent_cancel/0, agent_retry/1]).
+-export([agent_input_request/2,
+         agent_cancel/0,
+         agent_retry/1,
+         agent_error/2]).
 
 -type service_descriptor() :: {ebus:object_path(), map()}.
 -type service_key() :: path | name.
@@ -146,6 +149,9 @@ agent_cancel() ->
 agent_retry(ServicePath) ->
     gen_server:cast(?MODULE, {agent_retry, ServicePath}).
 
+agent_error(ServicePath, Error) ->
+    gen_server:cast(?MODULE, {agent_error, ServicePath, Error}).
+
 
 
 %%
@@ -273,8 +279,19 @@ handle_call(Msg, _From, State=#state{}) ->
 
 
 handle_cast(agent_cancel, State=#state{}) ->
+    %% We do not handle the agent reporting a canceled connect since
+    %% it mostly means that the corresponding connect call has timed
+    %% out, ie. the caller has gone away.
     lager:info("Agent mentions a canceled connect"),
     {noreply, State};
+handle_cast({agent_error, ServicePath, Error}, State=#state{}) ->
+    case lists:keyfind(ServicePath, #connect.service_path, maps:values(State#state.connects)) of
+        false ->
+            lager:info("Ignoring agent error for unknown: ~p", [ServicePath]),
+            {noreply, State};
+        #connect{tech=Tech, pid=ConnectPid} ->
+            {noreply, dispatch_connect_result(Tech, ConnectPid, Error, State)}
+    end;
 handle_cast({agent_retry, ServicePath}, State=#state{}) ->
     case lists:keyfind(ServicePath, #connect.service_path, maps:values(State#state.connects)) of
         false ->
@@ -305,21 +322,13 @@ handle_info({connect_service, Tech, ConnectPid, ServicePath}, State=#state{conne
             {noreply, State#state{connects=NewConnects}}
     end;
 handle_info({connect_result, Tech, ConnectPid, Result}, State=#state{}) ->
-    case maps:take(Tech, State#state.connects) of
-        {#connect{handler=Handler, monitor=Monitor, pid=ConnectPid}, Connects} ->
-            erlang:demonitor(Monitor, [flush]),
-            Handler ! {connect_result, Tech, Result},
-            {noreply, State#state{connects=Connects}};
-        _ ->
-            {noreply, State}
-    end;
-handle_info({'DOWN', _Monitor, process, Pid, Error}, State=#state{connects=Connects}) when Error /= normal ->
-    case lists:keyfind(Pid, #connect.pid, maps:values(Connects)) of
+    {noreply, dispatch_connect_result(Tech, ConnectPid, Result, State)};
+handle_info({'DOWN', _Monitor, process, Pid, Error}, State=#state{}) when Error /= normal ->
+    case lists:keyfind(Pid, #connect.pid, maps:values(State#state.connects)) of
         false ->
             {noreply, State};
-        #connect{handler=Handler, tech=Tech} ->
-            Handler ! {connect_result, Tech, {error, Error}},
-            {noreply, State#state{connects=maps:remove(Tech, Connects)}}
+        #connect{tech=Tech} ->
+            {noreply, dispatch_connect_result(Tech, Pid, {error, Error}, State)}
     end;
 handle_info(Msg, State=#state{}) ->
     lager:warning("Unhandled info ~p", [Msg]),
@@ -361,6 +370,18 @@ drop_connect(Tech, State=#state{}) ->
             erlang:demonitor(Monitor, [flush]),
             State#state{connects=Connects}
     end.
+
+-spec dispatch_connect_result(technology(), pid(), term(), #state{}) -> #state{}.
+dispatch_connect_result(Tech, ConnectPid, Result, State) ->
+    case maps:take(Tech, State#state.connects) of
+        {#connect{handler=Handler, pid=ConnectPid, monitor=Monitor}, Connects} ->
+            erlang:demonitor(Monitor, [flush]),
+            Handler ! {connect_result, Tech, Result},
+            State#state{connects=Connects};
+        _ ->
+            State
+    end.
+
 
 -spec tech_is_enabled(technology(), boolean(), #state{}) -> {ok, boolean()} | {error, term()}.
 tech_is_enabled(Tech, Enabled, State=#state{}) ->

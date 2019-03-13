@@ -50,6 +50,9 @@ handle_message("net.connman.Agent.ReportError", Msg, State=#state{}) ->
                 "net.connman.Agent.Error.Retry" ->
                     connman:agent_retry(ServicePath),
                     {noreply, State};
+                "invalid-key" ->
+                    connman:agent_error(ServicePath, {error, invalid_key}),
+                    {noreply, State};
                 Other ->
                     lager:warning("Could not handle ReportError: ~p", [Other]),
                     {noreply, State}

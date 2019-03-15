@@ -15,6 +15,7 @@
          searching/3, connecting/3]).
 
 -define(SEARCH_TIMEOUT, 10000).
+-define(CONNECT_TIMEOUT, 15000).
 -define(CONNECT_RESULT(T, R), {connect_result, T, self(), R}).
 
 callback_mode() -> state_functions.
@@ -60,7 +61,7 @@ searching(Type, Msg, Data=#data{}) ->
 connecting(info, connect_service, Data=#data{proxy=Proxy, service_path=Path, handler=Handler, tech=Tech}) ->
     lager:info("Connecting to ~p at ~p", [Data#data.service_name, Path]),
     Handler ! {connect_service, Tech, self(), Path},
-    case ebus_proxy:call(Proxy, Path, "net.connman.Service.Connect") of
+    case ebus_proxy:call(Proxy, Path, "net.connman.Service.Connect", [], [], ?CONNECT_TIMEOUT) of
         {error, unknown} ->
             %% Service disappeared while trying to connect. Scan and go back to searching
             connman:scan(Data#data.tech),

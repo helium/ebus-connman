@@ -287,7 +287,7 @@ handle_cast(agent_cancel, State=#state{}) ->
 handle_cast({agent_error, ServicePath, Error}, State=#state{}) ->
     case lists:keyfind(ServicePath, #connect.service_path, maps:values(State#state.connects)) of
         false ->
-            lager:info("Ignoring agent error for unknown: ~p", [ServicePath]),
+            lager:info("Ignoring agent error for unknown path ~p: ~p", [ServicePath, Error]),
             {noreply, State};
         #connect{tech=Tech, pid=ConnectPid} ->
             {noreply, dispatch_connect_result(Tech, ConnectPid, Error, State)}

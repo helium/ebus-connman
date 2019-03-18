@@ -9,13 +9,14 @@
                 proxy :: bus:proxy(),
                 services=[] :: [connman:service_descriptor()],
                 services_pid=undefined :: pid() | undefined,
-                services_signal_id=-1 :: ebus:signal_id()
+                services_signal_id=-1 :: ebus:signal_id(),
+                service_filter_id=-1 :: ebus:signal_id()
                }).
 
 %% gen_server
 -export([start_link/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 % APIA
--export([services/0, service_names/0, service_named/1, scan/1]).
+-export([services/0, service_names/0, service_named/2, scan/1]).
 
 %% API
 
@@ -36,22 +37,26 @@ service_names() ->
                         end
                 end, [], services()).
 
--spec service_named(string() | {connman:service_key(), string()}) -> connman:service_descriptor() | not_found.
-service_named(Name) when is_list(Name) ->
-    service_named({name, Name});
-service_named({Key, Name}) ->
+-spec service_named(connman:technology(), string() | {connman:service_key(), string()})
+                   -> connman:service_descriptor() | not_found.
+service_named(Tech, Name) when is_list(Name) ->
+    service_named(Tech, {name, Name});
+service_named(Tech, {Key, Name}) ->
+    TechName = atom_to_list(Tech),
     Filter = case Key of
-                 path -> fun({Path, _}) ->
+                 path -> fun({Path, M}) ->
                                  Path == Name
+                                     andalso maps:get("Type", M) == TechName
                          end;
                  name ->
                      fun({_, M}) ->
                              maps:get("Name", M, false) == Name
+                                 andalso maps:get("Type", M) == TechName
                      end
              end,
     case lists:filter(Filter, services()) of
         [] -> not_found;
-        [Entry] -> Entry
+        [Entry | _] -> Entry
     end.
 
 start_link(Bus) ->
@@ -85,9 +90,17 @@ handle_info(init_services, State=#state{proxy=Proxy}) ->
     {ok, ServicesSignal} =
         ebus_proxy:add_signal_handler(Proxy, "/", "net.connman.Manager.ServicesChanged",
                                       self(), ?SERVICES_SIGNAL_INFO),
+    Bus = ebus_proxy:bus(Proxy),
+    Rule = #{ type => signal,
+              interface => "net.connman.Service",
+              member => "PropertyChanged"},
+    ebus:add_match(Bus, Rule),
+    {ok, ServiceFilter} = ebus:add_filter(Bus, self(), Rule),
     %% Kick of a scan on wifi to speed up service discovery
     start_scan(wifi, State),
-    {noreply, State#state{services_signal_id=ServicesSignal, services_pid=ServicesPid}};
+    {noreply, State#state{services_signal_id=ServicesSignal,
+                          services_pid=ServicesPid,
+                          service_filter_id=ServiceFilter}};
 handle_info({get_services, Result}, State=#state{}) ->
     case Result of
         {ok, Services} ->
@@ -114,17 +127,28 @@ handle_info({ebus_signal, _, SignalID, Msg}, State=#state{services_signal_id=Sig
             lager:notice("Filter match error: ~p", [Error]),
             {noreply, State}
     end;
+handle_info({filter_match, FilterID, Msg}, State=#state{service_filter_id=FilterID}) ->
+    %% Merge in changed properties when we receive any PropertyChanged
+    %% on net.connman.Service
+    case ebus_message:args(Msg) of
+        {ok, [Name, Value]} ->
+            Path = ebus_message:path(Msg),
+            NewServices = merge_services(State#state.services, [{Path, #{Name => Value}}]),
+            {noreply, State#state{services=NewServices}};
+        {error, Error} ->
+            lager:notice("Error decoding filter message args: ~p", [Error]),
+            {noreply, State}
+    end;
 
 handle_info(Msg, State) ->
     lager:warning("Unhandled info ~p", [Msg]),
     {noreply, State}.
 
 
-terminate(_, State=#state{}) ->
-    ebus_proxy:remove_signal_handler(State#state.proxy,
-                                     State#state.services_signal_id,
-                                     self(),
-                                     ?SERVICES_SIGNAL_INFO).
+terminate(_, State=#state{proxy=Proxy}) ->
+    ebus:remove_filter(ebus_proxy:bus(Proxy), State#state.service_filter_id),
+    ebus_proxy:remove_signal_handler(Proxy, State#state.services_signal_id,
+                                     self(), ?SERVICES_SIGNAL_INFO).
 
 %%
 %% Internal

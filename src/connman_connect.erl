@@ -15,7 +15,7 @@
          searching/3, connecting/3]).
 
 -define(SEARCH_TIMEOUT, 10000).
--define(CONNECT_TIMEOUT, 15000).
+-define(CONNECT_TIMEOUT, 30000).
 -define(CONNECT_RESULT(T, R), {connect_result, T, self(), R}).
 
 callback_mode() -> state_functions.
@@ -42,7 +42,7 @@ init([Proxy, Tech, Service, Handler]) ->
     end.
 
 searching(info, find_service, Data=#data{}) ->
-    case connman:service_named(Data#data.service_name) of
+    case connman:service_named(Data#data.tech, Data#data.service_name) of
         not_found ->
             erlang:send_after(1000, self(), find_service),
             keep_state_and_data;
@@ -68,6 +68,23 @@ connecting(info, connect_service, Data=#data{proxy=Proxy, service_path=Path, han
             {next_state, searching, Data};
         {error,"net.connman.Error.AlreadyConnected"} ->
             Handler ! ?CONNECT_RESULT(Tech, ok),
+            {stop, normal, Data};
+        {error,"net.connman.Error.InProgress"} ->
+            %% InProgress means that the technology being asked to
+            %% connect is already trying to connect to the same _or_ a
+            %% different service.
+            %%
+            %% This can happen when a previous request to
+            %% Service.Connect timed out but the underlying connection
+            %% attempt was already started. We try to avoid this by
+            %% making the CONNECT_TIMEOUT long (as the API docs
+            %% suggest).
+            %%
+            %% The downside of this message is that the original
+            %% caller has already received a timeout message so
+            %% there's noone really waiting for the original call to
+            %% succeed or fail.
+            Handler ! ?CONNECT_RESULT(Tech, {error, already_connecting}),
             {stop, normal, Data};
         {ok, []} ->
             Handler ! ?CONNECT_RESULT(Tech, ok),

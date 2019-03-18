@@ -9,7 +9,7 @@
          register_state_notify/2, register_state_notify/3,
          unregister_state_notify/3,
          enable/2, scan/1, technologies/0,
-         services/0, service_names/0, service_named/1,
+         services/0, service_names/0, service_named/2,
          service_name/1, service_path/1,
          connect/4, disconnect/2, start_agent/0]).
 %% connman_agent
@@ -27,7 +27,7 @@
 
 -type technology() :: wifi | ethernet | bluetooth.
 -type state() :: idle | ready | online | disabled.
--type state_type() :: global | {tech, technology()}.
+-type state_type() :: global | {tech, technology()} | {path, ebus:object_path()}.
 -type service() :: {ebus:object_path(), map()}.
 -export_type([service/0, technology/0, state_type/0, state/0]).
 
@@ -99,9 +99,9 @@ services() ->
 service_names() ->
     connman_services:service_names().
 
--spec service_named(string() | {service_key(), string()}) -> not_found | service_descriptor().
-service_named(Name) ->
-    connman_services:service_named(Name).
+-spec service_named(technology(), string() | {service_key(), string()}) -> not_found | service_descriptor().
+service_named(Tech, Name) ->
+    connman_services:service_named(Tech, Name).
 
 -spec connect(technology(), string() | {service_key(), string()}, string(), pid()) -> ok | {error, term()}.
 connect(Tech, Name, ServicePass, Handler) when is_list(Name) ->
@@ -127,7 +127,7 @@ service_path(_) ->
 disconnect(Tech, Name) when is_list(Name) ->
     disconnect(Tech, {name, Name});
 disconnect(Tech, {name, Name}) ->
-    case service_named(Name) of
+    case service_named(Tech, Name) of
         not_found -> {error, not_found};
         {Path, _} -> disconnect(Tech, {path, Path})
     end;
@@ -217,6 +217,12 @@ handle_call({register_state_notify, {tech, Tech}, Handler, Info}, _From, State=#
     {reply, ebus_proxy:add_signal_handler(State#state.proxy,
                                           ?CONNMAN_PATH_TECH(Tech),
                                           "net.connman.Technology.PropertyChanged",
+                                          Handler, Info),
+     State};
+handle_call({register_state_notify, {path, Path}, Handler, Info}, _From, State=#state{}) ->
+    {reply, ebus_proxy:add_signal_handler(State#state.proxy,
+                                          Path,
+                                          "net.connman.Service.PropertyChanged",
                                           Handler, Info),
      State};
 handle_call({register_state_notify, Other, _Handler, _Info}, _From, State=#state{}) ->

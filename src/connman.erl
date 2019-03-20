@@ -296,6 +296,8 @@ handle_cast({agent_error, ServicePath, Error}, State=#state{}) ->
             lager:info("Ignoring agent error for unknown path ~p: ~p", [ServicePath, Error]),
             {noreply, State};
         #connect{tech=Tech, pid=ConnectPid} ->
+            %% Cancel the existing connect call
+            ebus_proxy:call(State#state.proxy, ServicePath, "net.connman.Service.Disconnect"),
             {noreply, dispatch_connect_result(Tech, ConnectPid, Error, State)}
     end;
 handle_cast({agent_retry, ServicePath}, State=#state{}) ->

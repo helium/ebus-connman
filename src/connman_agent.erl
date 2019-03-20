@@ -14,6 +14,8 @@
                 agent_name :: string()
                }).
 
+-define(CONNMAN_AGENT_CANCELED, "net.connman.Agent.Error.Canceled").
+
 start_link(Proxy) ->
     AgentName = "/net/helium/connmanctl" ++ integer_to_list(erlang:system_time(millisecond)),
     ebus_object:start_link(ebus_proxy:bus(Proxy), AgentName, ?MODULE,
@@ -32,8 +34,7 @@ handle_message("net.connman.Agent.RequestInput", Msg, State=#state{}) ->
             case connman:agent_input_request(ServicePath, Specs) of
                 false ->
                     lager:info("Failed to handle input request for ~p", [ServicePath]),
-                    {reply_error,
-                     "net.connman.Agent.Error.Canceled",
+                    {reply_error, ?CONNMAN_AGENT_CANCELED,
                      "unable to provide requested input", State};
                 ReplyMap ->
                     lager:info("Responded to input request for path ~p", [ServicePath]),
@@ -67,6 +68,9 @@ handle_message("net.connman.Agent.ReportError", Msg, State=#state{}) ->
 handle_message("net.connman.Agent.Cancel", _Msg, State=#state{}) ->
     connman:agent_cancel(),
     {noreply, State};
+handle_message("net.connman.Agent.RequestBrowser", _Msg, State=#state{}) ->
+    {reply_error, ?CONNMAN_AGENT_CANCELED,
+     "unable to provide browser", State};
 handle_message(Member, _Msg, State=#state{}) ->
     lager:warning("Unhandled message ~p", [Member]),
     {noreply, State}.

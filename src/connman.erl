@@ -11,7 +11,7 @@
          enable/2, scan/1, technologies/0,
          services/0, service_names/0, service_named/2,
          service_name/1, service_path/1,
-         connect/4, disconnect/2, start_agent/0]).
+         connect/4, disconnect/2, remove/2, start_agent/0]).
 %% connman_agent
 -export([agent_input_request/2,
          agent_cancel/0,
@@ -134,6 +134,18 @@ disconnect(Tech, {name, Name}) ->
 disconnect(_Tech, {path, Path}) ->
     gen_server:call(?MODULE, {disconnect, Path}).
 
+%% @doc Remove the named service for a given technology.
+-spec remove(technology(), string() | {service_key(), string()}) -> ok | {error, term()}.
+remove(Tech, Name) when is_list(Name) ->
+    remove(Tech, {name, Name});
+remove(Tech, {name, Name}) ->
+    case service_named(Tech, Name) of
+        not_found -> {error, not_found};
+        {Path, _} -> remove(Tech, {path, Path})
+    end;
+remove(_Tech, {path, Path}) ->
+    gen_server:call(?MODULE, {remove, Path}).
+
 %% @doc Starts the agent that will respond to agent callbacks from
 %% connmand. The agent is not started by default.
 -spec start_agent() -> ok | {error, term()}.
@@ -252,6 +264,14 @@ handle_call({agent_input_request, ServicePath, Specs}, _From, State=#state{conne
 
 handle_call({disconnect, ServicePath}, _From, State=#state{}) ->
     case ebus_proxy:call(State#state.proxy, ServicePath, "net.connman.Service.Disconnect") of
+        {ok, []} ->
+            {reply, ok, State};
+        {error, Error} ->
+            {reply, {error, Error}, State}
+    end;
+
+handle_call({remove, Service}, _From, State=#state{}) ->
+    case ebus_proxy:call(State#state.proxy, Service, "net.connman.Service.Remove") of
         {ok, []} ->
             {reply, ok, State};
         {error, Error} ->
